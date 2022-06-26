@@ -1,0 +1,21 @@
+name: AgentNet
+channels:
+  - pytorch
+  - pyg
+  - conda-forge
+  - defaults
+dependencies:
+  - pip
+  - python=3.9
+  - pytorch=1.11
+  - cudatoolkit=11.3
+  - numpy=1.22
+  - networkx=2.7
+  - matplotlib
+  - pyg=2.0
+  - sage # Comment out on Windows, only used for 3-WL dataset
+  - pip:
+    - test_tube
+    - ogb
+    - torch_ema
+    

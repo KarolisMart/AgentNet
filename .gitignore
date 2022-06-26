@@ -1,0 +1,4 @@
+__pycache__/
+slurm_log/
+data/
+.vscode/
