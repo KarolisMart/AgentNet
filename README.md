@@ -1,5 +1,5 @@
-# AgentNet
-This is a reference implementation for [Agent-based Graph Neural Networks](https://arxiv.org/abs/2206.11010).
+# Agent-based Graph Neural Networks
+This is a reference implementation for [Agent-based Graph Neural Networks](https://arxiv.org/abs/2206.11010) as presented at ICLR 2023.
 
 # Runinng The Code
 
