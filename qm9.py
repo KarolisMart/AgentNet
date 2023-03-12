@@ -77,15 +77,15 @@ train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=Tru
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 use_aux_loss = args.aux_loss
-model = AgentNet(num_features=dataset.num_features, hidden_units=args.hidden_units, num_out_classes=dataset.num_classes, dropout=args.dropout, num_steps=args.num_steps,
+model = AgentNet(num_features=dataset.num_features, hidden_units=args.hidden_units, num_out_classes=1, dropout=args.dropout, num_steps=args.num_steps,
                 num_agents=args.num_agents, reduce=args.reduce, node_readout=args.node_readout, use_step_readout_lin=args.use_step_readout_lin,
                 num_pos_attention_heads=args.num_pos_attention_heads, readout_mlp=args.readout_mlp, self_loops=args.self_loops, post_ln=args.post_ln,
                 attn_dropout=args.attn_dropout, no_time_cond=args.no_time_cond, mlp_width_mult=args.mlp_width_mult, activation_function=args.activation_function,
                 negative_slope=args.negative_slope, input_mlp=args.input_mlp, attn_width_mult=args.attn_width_mult, importance_init=args.importance_init,
                 random_agent=args.random_agent, test_argmax=args.test_argmax, global_agent_pool=args.global_agent_pool, agent_global_extra=args.agent_global_extra,
                 basic_global_agent=args.basic_global_agent, basic_agent=args.basic_agent, bias_attention=args.bias_attention, visited_decay=args.visited_decay,
-                sparse_conv=args.sparse_conv, num_edge_features=args.num_edge_features, mean_pool_only=args.mean_pool_only, edge_negative_slope=args.edge_negative_slope,
-                regression=args.regression, final_readout_only=args.final_readout_only, num_edge_features=5, regression=True, qm9=True).to(device)
+                sparse_conv=args.sparse_conv, mean_pool_only=args.mean_pool_only, edge_negative_slope=args.edge_negative_slope,
+                final_readout_only=args.final_readout_only, num_edge_features=5, regression=True, qm9=True).to(device)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 scheduler = get_cosine_schedule_with_warmup(optimizer, args.warmup, args.epochs, min_lr_mult=args.min_lr_mult)

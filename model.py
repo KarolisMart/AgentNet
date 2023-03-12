@@ -5,7 +5,7 @@ from torch_geometric.nn import global_mean_pool
 from torch_geometric.utils import add_self_loops, coalesce
 from torch_scatter import scatter_max, scatter_add
 from math import sqrt, log
-from typing import List, Optional
+from typing import Optional
 from argparse import ArgumentParser
 from test_tube import HyperOptArgumentParser
 
@@ -15,7 +15,7 @@ from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
 
 from util import gumbel_softmax, spmm, scatter
 
-def add_model_args(parent_parser: ArgumentParser, hyper: bool=False) -> ArgumentParser:
+def add_model_args(parent_parser: Optional[ArgumentParser]=None, hyper: bool=False) -> ArgumentParser:
     if parent_parser is not None:
         parser = HyperOptArgumentParser(parents=[parent_parser], add_help=False, conflict_handler='resolve') if hyper else ArgumentParser(parents=[parent_parser], add_help=False, conflict_handler='resolve')
     else:
@@ -42,7 +42,6 @@ def add_model_args(parent_parser: ArgumentParser, hyper: bool=False) -> Argument
     parser.add_argument('--num_pos_attention_heads', type=int, default=1)
     parser.add_argument('--clip_grad', type=float, default=-1.0)
     parser.add_argument('--readout_mlp', action='store_true', default=False)
-    parser.add_argument('--bias', action='store_true', default=False)
     parser.add_argument('--post_ln', action='store_true', default=False)
     parser.add_argument('--attn_dropout', type=float, default=0.0)
     parser.add_argument('--no_time_cond', action='store_true', default=False)
@@ -190,7 +189,7 @@ class AgentNet(nn.Module):
             self.edge_input_proj = nn.Sequential(nn.Linear(num_edge_features, self.dim*2), activation, nn.Linear(self.dim*2, self.dim))
             edge_dim = self.dim
         else:
-            self.edge_input_proj = nn.Sequential(nn.Identity()) # for jit
+            self.edge_input_proj = nn.Sequential(nn.Identity())
             edge_dim = 0
 
         self.node_mem_init = torch.nn.Parameter(torch.zeros(self.dim, requires_grad=True))
@@ -268,7 +267,6 @@ class AgentNet(nn.Module):
 
         self.reset_parameters()
 
-    @torch.jit.ignore
     def reset_parameters(self):
         # Have learnable global BSEU [back, stay, explored, unexplored] params
         if self.bias_attention: # Bias the parameters towards exploration
@@ -304,11 +302,12 @@ class AgentNet(nn.Module):
         if self.time_cond:
             time_emb = self.time_emb(torch.zeros(1, device=x.device, dtype=torch.long))
         
-        # Project inputs
-        init_node_emb = self.input_proj(x)
+        if self.ogb_mol:
+            init_node_emb = self.atom_encoder(x)
+        else:
+            init_node_emb = self.input_proj(x)
         del x
         node_emb = init_node_emb
-        node_mem = torch.zeros_like(node_emb)
 
         if self.ogb_mol:
             edge_emb = self.bond_encoder(edge_feat)

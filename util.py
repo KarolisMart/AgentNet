@@ -26,7 +26,6 @@ def print_mem():
     print('Cached MAX:   ', round(torch.cuda.max_memory_reserved(0)/1024**3,1), 'GB')
     torch.cuda.reset_peak_memory_stats(0)
 
-@torch.jit.script
 def spmm(index: Tensor, value: Tensor, m: int, n: int,
          matrix: Tensor, reduce: str='sum') -> Tensor:
     """Matrix product of sparse matrix with dense matrix.
@@ -79,7 +78,6 @@ def spmm(index: Tensor, value: Tensor, m: int, n: int,
 
     return out
 
-@torch.jit.script
 def scatter(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
             out: Optional[torch.Tensor] = None, dim_size: Optional[int] = None,
             reduce: str = "sum") -> torch.Tensor:
@@ -105,7 +103,6 @@ def scatter(src: torch.Tensor, index: torch.Tensor, dim: int = -1,
     else:
         return scatter_max(src, index, dim, out, dim_size)[0]
 
-# @torch.jit.script
 def gumbel_softmax(src: Tensor, index: LongTensor, num_nodes: int=0, hard: bool=True, tau: float=1.0, i: int=0):
     r"""Computes a sparsely evaluated gumbel softmax.
     Given a value tensor :attr:`src`, this function first groups the values

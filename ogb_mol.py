@@ -16,10 +16,10 @@ from model import AgentNet, add_model_args
 cls_criterion = torch.nn.BCEWithLogitsLoss()
 reg_criterion = torch.nn.MSELoss()
 
-def train(model, device, loader, optimizer, task_type, use_aux_loss=False):
+def train(model, device, loader, optimizer, task_type, use_aux_loss=False, verbose=True):
     model.train()
 
-    for step, batch in enumerate(tqdm(loader, desc="Iteration")):
+    for step, batch in enumerate(tqdm(loader, desc="Iteration", disable=not verbose)):
         batch = batch.to(device)
 
         if batch.x.shape[0] == 1 or batch.batch[-1] == 0:
@@ -29,19 +29,12 @@ def train(model, device, loader, optimizer, task_type, use_aux_loss=False):
                 pred, aux_pred = model(batch.x, batch.edge_index, batch.batch, batch.edge_attr)
             else:
                 pred, _ = model(batch.x, batch.edge_index, batch.batch, batch.edge_attr)
+            # print('aux_pred', aux_pred)
             optimizer.zero_grad()
             ## ignore nan targets (unlabeled) when computing training loss.
             is_labeled = batch.y == batch.y
-            is_labeled = is_labeled.view(-1)
             if "classification" in task_type: 
-                try:
-                    loss = cls_criterion(pred.to(torch.float32)[is_labeled], batch.y.to(torch.float32)[is_labeled])
-                except:
-                    print('fail')
-                    print(batch)
-                    print(pred)
-                    print(batch.y)
-                    print(is_labeled)
+                loss = cls_criterion(pred.to(torch.float32)[is_labeled], batch.y.to(torch.float32)[is_labeled])
             else:
                 loss = reg_criterion(pred.to(torch.float32)[is_labeled], batch.y.to(torch.float32)[is_labeled])
             if use_aux_loss:
@@ -110,15 +103,15 @@ def main(args, cluster=None):
     valid_loader = DataLoader(dataset[split_idx["valid"]], batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
     test_loader = DataLoader(dataset[split_idx["test"]], batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
 
-    model = AgentNet(num_features=dataset.num_features, hidden_units=args.hidden_units, num_out_classes=dataset.num_classes, dropout=args.dropout, num_steps=args.num_steps,
+    model = AgentNet(num_features=dataset.num_features, hidden_units=args.hidden_units, num_out_classes=dataset.num_tasks, dropout=args.dropout, num_steps=args.num_steps,
                     num_agents=args.num_agents, reduce=args.reduce, node_readout=args.node_readout, use_step_readout_lin=args.use_step_readout_lin,
                     num_pos_attention_heads=args.num_pos_attention_heads, readout_mlp=args.readout_mlp, self_loops=args.self_loops, post_ln=args.post_ln,
                     attn_dropout=args.attn_dropout, no_time_cond=args.no_time_cond, mlp_width_mult=args.mlp_width_mult, activation_function=args.activation_function,
                     negative_slope=args.negative_slope, input_mlp=args.input_mlp, attn_width_mult=args.attn_width_mult, importance_init=args.importance_init,
                     random_agent=args.random_agent, test_argmax=args.test_argmax, global_agent_pool=args.global_agent_pool, agent_global_extra=args.agent_global_extra,
                     basic_global_agent=args.basic_global_agent, basic_agent=args.basic_agent, bias_attention=args.bias_attention, visited_decay=args.visited_decay,
-                    sparse_conv=args.sparse_conv, num_edge_features=args.num_edge_features, mean_pool_only=args.mean_pool_only, edge_negative_slope=args.edge_negative_slope,
-                    regression=args.regression, final_readout_only=args.final_readout_only, ogb_mol=True).to(device)
+                    sparse_conv=args.sparse_conv, mean_pool_only=args.mean_pool_only, edge_negative_slope=args.edge_negative_slope,
+                    final_readout_only=args.final_readout_only, ogb_mol=True).to(device)
 
 
     # optimizer = optim.Adam(model.parameters(), lr=args.lr)

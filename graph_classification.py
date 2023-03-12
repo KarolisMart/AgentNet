@@ -307,8 +307,8 @@ def main(args, cluster=None):
                         negative_slope=args.negative_slope, input_mlp=args.input_mlp, attn_width_mult=args.attn_width_mult, importance_init=args.importance_init,
                         random_agent=args.random_agent, test_argmax=args.test_argmax, global_agent_pool=args.global_agent_pool, agent_global_extra=args.agent_global_extra,
                         basic_global_agent=args.basic_global_agent, basic_agent=args.basic_agent, bias_attention=args.bias_attention, visited_decay=args.visited_decay,
-                        sparse_conv=args.sparse_conv, num_edge_features=args.num_edge_features, mean_pool_only=args.mean_pool_only, edge_negative_slope=args.edge_negative_slope,
-                        regression=args.regression, final_readout_only=args.final_readout_only)
+                        sparse_conv=args.sparse_conv, mean_pool_only=args.mean_pool_only, edge_negative_slope=args.edge_negative_slope,
+                        final_readout_only=args.final_readout_only)
 
     model = model.to(device)
     use_aux_loss = args.use_aux_loss

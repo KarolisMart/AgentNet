@@ -438,15 +438,15 @@ def main(args, cluster=None):
         model = Powerful(dataset.num_classes, dataset.num_features, args.num_steps, args.hidden_units,
                           args.hidden_units, args.dropout, simplified=False, layers_per_conv=args.layers_per_conv, activation_function=args.activation_function, negative_slope=args.negative_slope)
     else:
-        model = AgentNet(num_features=dataset.num_features, hidden_units=args.hidden_units, num_out_classes=dataset.num_classe, dropout=args.dropout, num_steps=args.num_steps,
+        model = AgentNet(num_features=dataset.num_features, hidden_units=args.hidden_units, num_out_classes=dataset.num_classes, dropout=args.dropout, num_steps=args.num_steps,
                         num_agents=args.num_agents, reduce=args.reduce, node_readout=args.node_readout, use_step_readout_lin=args.use_step_readout_lin,
                         num_pos_attention_heads=args.num_pos_attention_heads, readout_mlp=args.readout_mlp, self_loops=args.self_loops, post_ln=args.post_ln,
                         attn_dropout=args.attn_dropout, no_time_cond=args.no_time_cond, mlp_width_mult=args.mlp_width_mult, activation_function=args.activation_function,
                         negative_slope=args.negative_slope, input_mlp=args.input_mlp, attn_width_mult=args.attn_width_mult, importance_init=args.importance_init,
                         random_agent=args.random_agent, test_argmax=args.test_argmax, global_agent_pool=args.global_agent_pool, agent_global_extra=args.agent_global_extra,
                         basic_global_agent=args.basic_global_agent, basic_agent=args.basic_agent, bias_attention=args.bias_attention, visited_decay=args.visited_decay,
-                        sparse_conv=args.sparse_conv, num_edge_features=args.num_edge_features, mean_pool_only=args.mean_pool_only, edge_negative_slope=args.edge_negative_slope,
-                        regression=args.regression, final_readout_only=args.final_readout_only)
+                        sparse_conv=args.sparse_conv, mean_pool_only=args.mean_pool_only, edge_negative_slope=args.edge_negative_slope,
+                        final_readout_only=args.final_readout_only)
     
     print(model.__class__.__name__)
     model = model.to(device)
