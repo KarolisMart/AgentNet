@@ -177,6 +177,7 @@ class AgentNet(nn.Module):
         else:
             self.input_proj = nn.Sequential(nn.Linear(num_features, self.dim))
 
+        self.input_proj_agent = nn.Sequential(nn.Linear(self.dim, self.dim))
         if self.ogb_mol:
             self.bond_encoder = BondEncoder(self.dim)
             self.atom_encoder = AtomEncoder(self.dim)
@@ -196,11 +197,11 @@ class AgentNet(nn.Module):
 
         # Agent embeddings
         self.agent_emb = nn.Embedding(self.num_agents, self.dim)
-
+        self.init_query = nn.Sequential((nn.Identity() if self.post_ln else nn.LayerNorm(self.dim)), nn.Linear(self.dim, self.dim*attn_width_mult*self.num_pos_attention_heads))
         # Attention params for first node position selection (if used)
         if self.importance_init:
             self.init_key = nn.Sequential((nn.Identity() if self.post_ln else nn.LayerNorm(self.dim)), nn.Linear(self.dim, self.dim*attn_width_mult*self.num_pos_attention_heads))
-            self.init_query = nn.Sequential((nn.Identity() if self.post_ln else nn.LayerNorm(self.dim)), nn.Linear(self.dim, self.dim*attn_width_mult*self.num_pos_attention_heads))
+            # self.init_query = nn.Sequential((nn.Identity() if self.post_ln else nn.LayerNorm(self.dim)), nn.Linear(self.dim, self.dim*attn_width_mult*self.num_pos_attention_heads))
             self.init_attn_lin = nn.Sequential(nn.Linear(self.num_pos_attention_heads, 1))
 
         # Layer norms
@@ -340,6 +341,7 @@ class AgentNet(nn.Module):
                                             torch.arange(num_nodes_batch, device=batch.device).repeat_interleave(self.num_agents)
                                           ])
             # Move agents
+
             Q = self.init_query(agent_emb).reshape(agent_emb.size(0), self.num_pos_attention_heads, -1)
             K = self.init_key(init_node_emb.clone()).reshape(num_nodes_batch, self.num_pos_attention_heads, -1)
             attn_score = (Q[agent_neighbour[0]] * K[agent_neighbour[1]]).sum(dim=-1).view(-1) / sqrt(Q.size(-1))
@@ -406,6 +408,9 @@ class AgentNet(nn.Module):
             visited_nodes = torch.zeros(num_nodes_batch, self.num_agents, dtype=torch.float, device=agent_neighbour.device)
             visited_nodes.scatter_(0, agent_pos.view(batch_size, self.num_agents), torch.ones(batch_size, self.num_agents, device=agent_pos.device))
 
+        
+        
+        
         for i in range(self.num_steps+1):
             # Get time for current step
             time_emb = self.time_emb(torch.tensor([i], device=node_emb.device, dtype=torch.long))
@@ -598,6 +603,347 @@ class AgentNet(nn.Module):
                 
                 out += layer_out
                 del layer_out
+
+        for j in range(0, 4):
+            # 生成新图
+            gen_eg = torch.stack([ 
+                torch.arange(0, num_agents_batch).view(batch_size, self.num_agents ).repeat_interleave(self.num_agents, dim=0).view(-1),
+                torch.arange(0, num_agents_batch).repeat_interleave(self.num_agents)
+                ])
+            
+
+            Q_and_K = self.init_query(agent_emb).reshape(agent_emb.size(0), self.num_pos_attention_heads, -1)
+            
+            attantion_edg = (Q_and_K[gen_eg[0]] * Q_and_K[gen_eg[1]]).sum(dim=-1).view(-1) / sqrt(Q_and_K.size(-1))
+
+            if self.num_pos_attention_heads > 1:
+                attantion_edg = self.init_attn_lin(attantion_edg.view(gen_eg.size(1), self.num_pos_attention_heads))
+
+
+            attantion_edg = attantion_edg.view(batch_size, int(attantion_edg.size(0)/batch_size))
+
+            _, edg_list = torch.topk(attantion_edg, int(self.num_agents * self.num_agents/20))
+
+            gen_eg = gen_eg.unsqueeze(1)
+            gen_eg = gen_eg.view(2, batch_size, self.num_agents * self.num_agents)
+            gen_eg = gen_eg[:, :, edg_list].view(2, -1)
+
+            del attantion_edg, edg_list
+
+            gen_eg = gen_eg.to(agent_emb.device)
+
+            del batch
+            x = agent_emb
+            edge_index = gen_eg
+            batch = torch.arange(0, batch_size).repeat_interleave(self.num_agents)
+
+            batch = batch.to(agent_emb.device)
+
+            batch_size = (batch.max() + 1).item()
+            num_nodes_batch = x.size(0)
+            num_agents_batch = int(self.num_agents*batch_size)
+            if self.ogb_mol:
+                init_node_emb = self.atom_encoder(x)
+            else:
+                init_node_emb = self.input_proj_agent(x)
+            del x
+            node_emb = init_node_emb
+
+            if self.ogb_mol:
+                edge_emb = self.bond_encoder(edge_feat)
+            elif self.qm9:
+                edge_emb = edge_feat
+            elif edge_feat is not None:
+                edge_emb = self.edge_input_proj(edge_feat)
+            else:
+                edge_emb = None
+
+            # Add self loops to let agent stay on a current node
+            edge_index_sl = edge_index.clone()
+            edge_emb_sl = edge_emb if edge_emb is None else edge_emb.clone()
+            if self.self_loops:
+                edge_index_sl, edge_emb_sl = add_self_loops(edge_index_sl, edge_attr=edge_emb_sl, num_nodes=num_nodes_batch)
+            if edge_emb_sl is not None:
+                edge_index_sl, edge_emb_sl = coalesce(edge_index_sl, edge_emb_sl, num_nodes_batch)
+                edge_index, edge_emb = coalesce(edge_index, edge_emb, num_nodes_batch)
+            else:
+                edge_index_sl = coalesce(edge_index_sl, None, num_nodes_batch)
+                edge_index = coalesce(edge_index, None, num_nodes_batch)
+
+            # Set agent embeddings
+            agent_emb = self.agent_emb(torch.arange(self.num_agents, device=edge_index.device)).unsqueeze(0).expand(batch_size, -1, -1).reshape(-1, self.dim)
+
+            # Set agent positions using attention
+            if self.importance_init:
+                agent_neighbour = torch.stack([
+                                                torch.arange(num_agents_batch, device=batch.device).view(batch_size, self.num_agents).repeat_interleave(scatter_add(torch.ones_like(batch), batch), dim=0).view(-1),
+                                                torch.arange(num_nodes_batch, device=batch.device).repeat_interleave(self.num_agents)
+                                            ])
+                # Move agents
+
+                Q = self.init_query(agent_emb).reshape(agent_emb.size(0), self.num_pos_attention_heads, -1)
+                K = self.init_key(init_node_emb.clone()).reshape(num_nodes_batch, self.num_pos_attention_heads, -1)
+                attn_score = (Q[agent_neighbour[0]] * K[agent_neighbour[1]]).sum(dim=-1).view(-1) / sqrt(Q.size(-1))
+                if self.num_pos_attention_heads > 1:
+                    attn_score = self.init_attn_lin(attn_score.view(agent_neighbour.size(1), self.num_pos_attention_heads))
+                agent_neighbour_attention_value = gumbel_softmax(attn_score, agent_neighbour[0], num_nodes=num_agents_batch, hard=True, tau=(self.temp if self.training or not self.test_argmax else 1e-6))
+                del Q, K, attn_score
+
+                # Get updated agent positions
+                indices = scatter_max(agent_neighbour_attention_value, agent_neighbour[0], dim=0, dim_size=num_agents_batch)[1]
+                if indices.max() >= agent_neighbour_attention_value.size(0):
+                    # Try again as scatter_max sometimes randomly fails even though imputs are good???
+                    torch.cuda.synchronize(device=agent_neighbour_attention_value.device)
+                    indices = scatter_max(agent_neighbour_attention_value, agent_neighbour[0], dim=0, dim_size=num_agents_batch)[1]
+                    if indices.max() >= agent_neighbour_attention_value.size(0):
+                        print(i, agent_neighbour_attention_value.max(), indices.max(), indices.argmax())
+                        print(agent_neighbour_attention_value)
+                        print(agent_neighbour)
+                        print(agent_neighbour)
+                        raise ValueError # Make sure agents are not placed 'out of bounds', this should not be possible here
+                agent_pos = agent_neighbour[1][indices]
+                agent_node = torch.stack([torch.arange(agent_pos.size(0), device=agent_pos.device), agent_pos], dim=0) # N_agents x N_nodes adjacency
+                agent_node_attention_value = agent_neighbour_attention_value[indices] # NOTE multiply node emb with this to attach gradients when getting node agent is on
+                del indices
+            # Set agent positions randomly
+            else:
+                max_nodes_in_graph = scatter_add(torch.ones_like(batch, dtype=torch.float), batch).max().long().item()
+                rand = torch.randint(0, int((max_nodes_in_graph - 1)*1e+6), [agent_emb.size(0)], device=edge_index.device) / int(max_nodes_in_graph*1e+6) # always < 1, node out of bounds (idx = num_nodes_batch) never picked with the floor
+                node_counts = scatter_add(torch.ones_like(batch), batch, dim=0)
+                step = node_counts.view(-1, 1).expand(-1, self.num_agents).reshape(-1)
+                start = node_counts.cumsum(-1).view(-1, 1).expand(-1, self.num_agents).reshape(-1) - step
+                agent_pos = torch.floor(rand * step + start).long()
+                if agent_pos.max() >= num_nodes_batch:
+                    print(rand.max())
+                    raise ValueError # Make sure agents are not placed 'out of bounds'
+                agent_node = torch.stack([torch.arange(agent_pos.size(0), device=agent_pos.device), agent_pos], dim=0) # N_agents x N_nodes adjacency
+                agent_node_attention_value = torch.ones(agent_pos.size(0), dtype=torch.float, device=agent_pos.device)
+                del max_nodes_in_graph, rand, node_counts, step, start
+            node_agent = torch.stack([agent_node[1], agent_node[0]]) # Transpose with no coalesce
+            node_agent_attn_value = agent_node_attention_value
+            if edge_feat is not None:
+                edge_taken_emb = torch.zeros(agent_pos.size(0), edge_emb.size(-1), device=edge_emb.device)
+
+            out = torch.zeros(batch_size, self.num_out_classes, device=edge_index.device)
+
+            adj = torch_sparse.tensor.SparseTensor(row=edge_index_sl[0], col=edge_index_sl[1], value=edge_emb_sl,
+                                    sparse_sizes=(num_nodes_batch, num_nodes_batch), is_sorted=False)
+            del edge_index_sl
+            if self.sparse_conv:
+                adj_no_self_loop = torch_sparse.tensor.SparseTensor(row=edge_index[0], col=edge_index[1], value=edge_emb,
+                                    sparse_sizes=(num_nodes_batch, num_nodes_batch), is_sorted=False)
+                del edge_index
+
+            # # Fastest option to get agent -> neighbour adjacency?
+            agent_neighbour_coo = torch_sparse.tensor.__getitem__(adj, agent_node[1]).coo()
+            agent_neighbour = torch.stack(agent_neighbour_coo[:2])
+            agent_neighbour_edge_emb = agent_neighbour_coo[2]
+            del agent_neighbour_coo
+            if agent_neighbour[0].unique().size(0) != num_agents_batch: # Check if all agents have a neighbor
+                raise ValueError
+
+            # Track visited nodes
+            if self.basic_global_agent or self.basic_agent or self.bias_attention:
+                visited_nodes = torch.zeros(num_nodes_batch, self.num_agents, dtype=torch.float, device=agent_neighbour.device)
+                visited_nodes.scatter_(0, agent_pos.view(batch_size, self.num_agents), torch.ones(batch_size, self.num_agents, device=agent_pos.device))
+
+            
+            
+            
+            for i in range(self.num_steps+1):
+                # Get time for current step
+                time_emb = self.time_emb(torch.tensor([i], device=node_emb.device, dtype=torch.long))
+
+                # In the first iteration just update the starting node/agent embeddings
+                if i > 0: 
+                    # Fastest option to get agent -> neighbour adjacency?
+                    agent_neighbour_coo = torch_sparse.tensor.__getitem__(adj, agent_node[1]).coo()
+                    agent_neighbour = torch.stack(agent_neighbour_coo[:2])
+                    agent_neighbour_edge_emb = agent_neighbour_coo[2]
+                    del agent_neighbour_coo
+                    if agent_neighbour[0].unique().size(0) != num_agents_batch: # Check if all agents have a neighbor
+                        print(i, agent_neighbour[0].unique().size(0), agent_neighbour[0], agent_neighbour[1])
+                        raise ValueError       
+                    
+                    if self.random_agent:
+                        # Set random attention wieghts for neighbors
+                        agent_neighbour_attention_value = torch.rand(agent_neighbour.size(1), dtype=torch.float, device=agent_neighbour.device)
+                    else:
+                        if self.basic_global_agent or self.basic_agent or self.bias_attention:
+                            # Fill in neighbor attention scores using the learned logits for [back, stay, explored, unexplored]
+                            attn_score = torch.zeros_like(agent_neighbour[0], dtype=torch.float)
+
+                            # Update tracked positions
+                            previous_visited = visited_nodes[agent_neighbour[1]].gather(1, (agent_neighbour[0] % self.num_agents).unsqueeze(1)).squeeze(1)
+                            visited_nodes = visited_nodes * self.visited_decay
+                            visited_nodes.scatter_(0, agent_pos.view(batch_size, self.num_agents), torch.ones(batch_size, self.num_agents, device=agent_pos.device))
+
+                            # Get tracked values for new neighbors
+                            neighbors_visited = visited_nodes[agent_neighbour[1]].gather(1, (agent_neighbour[0] % self.num_agents).unsqueeze(1)).squeeze(1)
+
+                            mask_old = neighbors_visited < 1.0 # Disregard the current node
+
+                        if self.basic_agent and not self.bias_attention:
+                            attn_params = self.basic_agent_attn_mlp(agent_emb)
+                            explored_param = self.explored_param + attn_params[:,0]
+                            unexplored_param = self.unexplored_param + attn_params[:,1]
+                            stay_param = self.stay_param + attn_params[:,2]
+                            back_param = self.back_param + attn_params[:,3]
+                            
+                            attn_score[mask_old] += (neighbors_visited[mask_old] / self.visited_decay) * explored_param[agent_neighbour[0]][mask_old] # remove one decay step, such that previous neighbor would have visited = 1.0
+                            attn_score[mask_old] += ((1 - (neighbors_visited[mask_old] / self.visited_decay)) * unexplored_param[agent_neighbour[0]][mask_old]) # Same
+                            attn_score[neighbors_visited==1.0] += stay_param # Current node has visited = 1.0
+                            if i > 1: # No previous node at first step
+                                attn_score[previous_visited==1.0] += back_param
+                        elif self.basic_global_agent and not self.bias_attention:
+                            attn_score[mask_old] += (neighbors_visited[mask_old] / self.visited_decay) * self.explored_param # remove one decay step, such that previous neighbor would have visited = 1.0
+                            attn_score[mask_old] += ((1 - (neighbors_visited[mask_old] / self.visited_decay)) * self.unexplored_param) # Disregard the current node here
+                            attn_score[neighbors_visited==1.0] += self.stay_param # Current node has visited = 1.0
+                            if i > 1: # No previous node at first step
+                                attn_score[previous_visited==1.0] += self.back_param
+                        else:
+                                
+                            # Move agents
+                            Q = self.query(agent_emb).reshape(agent_emb.size(0), self.num_pos_attention_heads, -1)
+                            if edge_feat is not None:
+                                K = torch.cat([node_emb[agent_neighbour[1]], agent_neighbour_edge_emb, node_emb[agent_node[1]][agent_neighbour[0]]], dim=-1)
+                            else:
+                                K = torch.cat([node_emb[agent_neighbour[1]], node_emb[agent_node[1]][agent_neighbour[0]]], dim=-1)   
+                            K = self.key(K).reshape(agent_neighbour.size(1), self.num_pos_attention_heads, -1)
+                            attn_score = (Q[agent_neighbour[0]] * K).sum(dim=-1).view(-1) / sqrt(Q.size(-1))
+                            del K, Q
+                            if self.num_pos_attention_heads > 1:
+                                attn_score = self.attn_lin(attn_score.view(agent_neighbour.size(1), self.num_pos_attention_heads))
+
+                            if self.bias_attention and self.basic_agent:
+                                attn_params = self.basic_agent_attn_mlp(agent_emb)
+                                explored_param = self.explored_param + attn_params[:,0]
+                                unexplored_param = self.unexplored_param + attn_params[:,1]
+                                stay_param = self.stay_param + attn_params[:,2]
+                                back_param = self.back_param + attn_params[:,3]
+                                
+                                attn_score[mask_old] += (neighbors_visited[mask_old] / self.visited_decay) * explored_param[agent_neighbour[0]][mask_old] # remove one decay step, such that previous neighbor would have visited = 1.0
+                                attn_score[mask_old] += ((1 - (neighbors_visited[mask_old] / self.visited_decay)) * unexplored_param[agent_neighbour[0]][mask_old]) # Same
+                                if self.self_loops:
+                                    attn_score[neighbors_visited==1.0] += stay_param # Current node has visited = 1.0
+                                if i > 1: # No previous node at first step
+                                    attn_score[previous_visited==1.0] += back_param
+                            elif self.bias_attention:
+                                attn_score[mask_old] += (neighbors_visited[mask_old] / self.visited_decay) * self.explored_param # remove one decay step, such that previous neighbor would have visited = 1.0
+                                attn_score[mask_old] += ((1 - (neighbors_visited[mask_old] / self.visited_decay)) * self.unexplored_param) # Same
+                                if self.self_loops:
+                                    attn_score[neighbors_visited==1.0] += self.stay_param # Current node has visited = 1.0
+                                if i > 1: # No previous node at first step
+                                    attn_score[previous_visited==1.0] += self.back_param # Previous node has visited = 1.0 * decay
+
+
+                        agent_neighbour_attention_value = gumbel_softmax(attn_score, agent_neighbour[0], num_nodes=num_agents_batch, hard=True, tau=(self.temp if self.training or not self.test_argmax else 1e-6), i=i)
+                        del attn_score
+
+                    # Get updated agent positions
+                    indices = scatter_max(agent_neighbour_attention_value, agent_neighbour[0], dim=0, dim_size=num_agents_batch)[1] # NOTE: could convert this to boolean tensor instead
+                    if indices.max() >= agent_neighbour_attention_value.size(0):
+                        # Try again as scatter_max sometimes randomly fails even though imputs are good???
+                        torch.cuda.synchronize(device=agent_neighbour_attention_value.device)
+                        indices = scatter_max(agent_neighbour_attention_value, agent_neighbour[0], dim=0, dim_size=num_agents_batch)[1]
+                        if indices.max() >= agent_neighbour_attention_value.size(0):
+                            print(i, agent_neighbour_attention_value.max(), indices.max(), indices.argmax())
+                            print(agent_neighbour_attention_value)
+                            print(agent_neighbour)
+                            print(agent_neighbour)
+                            raise ValueError # Make sure agents are not placed 'out of bounds', this should not be possible here
+                    agent_pos = agent_neighbour[1][indices]
+                    if agent_pos.max() >= num_nodes_batch:
+                        print(i, agent_pos, agent_neighbour)
+                        raise ValueError # Make sure agents are not placed 'out of bounds', this should not be possible here
+                    if indices.size(0) != num_agents_batch: # Check if all agents have a neighbor
+                        print(i, agent_pos.unique().size(0), agent_pos)
+                        raise ValueError
+                    agent_node = torch.stack([torch.arange(agent_pos.size(0), device=agent_pos.device), agent_pos], dim=0) # N_agents x N_nodes adjacency
+                    agent_node_attention_value = torch.ones_like(agent_pos, dtype=torch.float) if self.random_agent else agent_neighbour_attention_value[indices] # NOTE multiply node emb with this to attach gradients when getting node agent is on
+                    node_agent = torch.stack([agent_node[1], agent_node[0]]) # Transpose with no coalesce
+                    node_agent_attn_value = agent_node_attention_value
+                    if edge_feat is not None:
+                        edge_taken_emb = agent_neighbour_edge_emb.clone()[indices]
+                    del indices
+
+                # Update node embeddings
+                active_nodes = torch.unique(agent_pos)
+                if self.agent_node_edge_lin is not None:
+                    agent_ln = F.leaky_relu(self.agent_node_ln(agent_emb) + self.agent_node_edge_lin(edge_taken_emb * agent_node_attention_value.unsqueeze(-1)), negative_slope=self.edge_negative_slope)
+                else:
+                    if edge_feat is not None:
+                        agent_cat = torch.cat([agent_emb, edge_taken_emb * agent_node_attention_value.unsqueeze(-1)], dim=-1)
+                    else:
+                        agent_cat = agent_emb
+                    agent_ln = self.agent_node_ln(agent_cat)
+                    del agent_cat
+                if self.global_agent_pool:
+                    global_agent = agent_ln.view(batch_size, self.num_agents, -1).mean(dim=1, keepdim=False)
+                    node_update = torch.cat([node_emb[active_nodes], spmm(node_agent, node_agent_attn_value, num_nodes_batch, num_agents_batch, agent_ln, reduce=self.reduce)[active_nodes], global_agent[batch[active_nodes]]], dim=-1)
+                    node_update = node_update + self.node_mlp_time(time_emb)
+                else:
+                    node_update = torch.cat([node_emb[active_nodes], spmm(node_agent, node_agent_attn_value, num_nodes_batch, num_agents_batch, agent_ln, reduce=self.reduce)[active_nodes]], dim=-1) + self.node_mlp_time(time_emb)
+                del agent_ln
+                node_emb[active_nodes] = self.node_ln(node_emb[active_nodes] + self.node_mlp(node_update))
+                del node_update
+
+                # Do a convolution to get neighborhood info:
+                if self.sparse_conv:
+                    active_edge_index_coo = torch_sparse.tensor.__getitem__(adj_no_self_loop, active_nodes).coo()
+                    active_edge_index = torch.stack(active_edge_index_coo[:2])
+                    active_edge_emb = active_edge_index_coo[2]
+                    del active_edge_index_coo
+                else: # For small graphs just doing a conv on everything, but updating only active nodes is faster
+                    active_edge_index = edge_index
+                    active_edge_emb = edge_emb
+                if self.qm9:
+                    # Do the NNConv - convolution (https://pytorch-geometric.readthedocs.io/en/latest/_modules/torch_geometric/nn/conv/nn_conv.html#NNConv)
+                    weight = self.edge_nn(active_edge_emb)
+                    weight = weight.view(-1, self.dim, self.dim)
+                    message_val = torch.matmul(node_emb[active_edge_index[1]].unsqueeze(1), weight).squeeze(1)
+                    node_update = torch.cat([node_emb[active_nodes], scatter(message_val, active_edge_index[0], dim=0, dim_size=num_nodes_batch, reduce=self.reduce)[active_nodes]], dim=-1)
+                    del weight, message_val
+                elif edge_feat is not None:
+                    # Pre-process edge embeddings
+                    node_cat = torch.cat([node_emb[active_edge_index[1]], active_edge_emb], dim=-1)
+                    # Need to materialize the messages if we have edge features
+                    message_val = self.message_val(node_cat)
+                    node_update = torch.cat([node_emb[active_nodes], scatter(message_val, active_edge_index[0], dim=0, dim_size=num_nodes_batch, reduce=self.reduce)[active_nodes]], dim=-1)
+                    del message_val
+                else:
+                    node_update = torch.cat([node_emb[active_nodes], spmm(active_edge_index, torch.ones_like(active_edge_index[0], dtype=torch.float), num_nodes_batch, num_nodes_batch, node_emb, reduce=self.reduce)[active_nodes]], dim=-1)
+                node_emb[active_nodes] = self.conv_ln(node_emb[active_nodes] + self.conv_mlp(node_update))
+                del node_update
+
+                # Update agent embeddings
+                if edge_feat is not None:
+                    agent_cat = torch.cat([agent_emb, node_emb[agent_pos] * agent_node_attention_value.unsqueeze(-1), edge_taken_emb * agent_node_attention_value.unsqueeze(-1)], dim=-1)
+                else:
+                    agent_cat = torch.cat([agent_emb, node_emb[agent_pos] * agent_node_attention_value.unsqueeze(-1)], dim=-1)
+                if self.global_agent_pool and self.agent_global_extra:
+                    agent_cat = torch.cat([agent_cat, global_agent.unsqueeze(1).expand(-1, self.num_agents, -1).reshape(num_agents_batch, -1)], dim=-1)
+                agent_emb = self.agent_ln(agent_emb + self.agent_mlp(agent_cat + self.agent_mlp_time(time_emb)))
+                del agent_cat
+
+                # Readout
+                if not self.final_readout_only:
+                    layer_out = self.step_readout_mlp(agent_emb.view(batch_size, self.num_agents, -1) + self.step_readout_mlp_time(time_emb))
+
+                    if self.mean_pool_only:
+                        layer_out = torch.mean(layer_out, dim=1)
+                    else:
+                        layer_out = torch.cat([torch.max(layer_out, dim=1)[0], torch.mean(layer_out, dim=1)], dim=-1)
+                    
+                    if self.node_readout:
+                        layer_out = torch.cat([layer_out, global_mean_pool(node_emb, batch)], dim=-1)
+
+                    layer_out = F.dropout(self.fc(layer_out), p=self.dropout, training=self.training)
+                    
+                    out += layer_out
+                    del layer_out
+
+        # print(agent_emb.shape)
         if self.final_readout_only:
             out = self.step_readout_mlp(agent_emb.view(batch_size, self.num_agents, -1) + self.step_readout_mlp_time(time_emb))
 

@@ -16,6 +16,7 @@ from test_tube.hpc import SlurmCluster
 
 from util import cos_anneal, get_cosine_schedule_with_warmup, PTCDataset
 from model import AgentNet, add_model_args
+from torch_scatter import scatter_max, scatter_add
 from smp_models.ppgn import Powerful
 
 torch.set_printoptions(profile="full")
@@ -322,9 +323,11 @@ def main(args, cluster=None):
         correct_aux = 0
         for data in loader:
             data = data.to(device)
-            optimizer.zero_grad()
+            optimizer.zero_grad() 
+
             logs, aux_logs = model(data.x, data.edge_index, data.batch)
-        
+           
+            # print(scatter_add(torch.ones_like(data.batch), data.batch).shape)
             loss = F.nll_loss(logs, data.y)
             n += len(data.y)
             if use_aux_loss:
