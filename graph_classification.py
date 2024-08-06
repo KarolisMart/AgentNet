@@ -286,7 +286,9 @@ def main(args, cluster=None):
                 return F.log_softmax(out, dim=-1), F.log_softmax(aux_out, dim=-1)
             else:
                 return F.log_softmax(out, dim=-1), 0
-
+    with open("out.txt", "a", encoding="utf-8") as file:
+        txt = '\n' + args.model_type + '   ' + args.dataset
+        file.write(txt)
     torch.manual_seed(0)
     np.random.seed(0)  
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -406,6 +408,10 @@ def main(args, cluster=None):
     acc = torch.stack(acc, dim=0)
     acc_mean = acc.mean(dim=0)
     best_epoch = acc_mean.argmax().item()
+    with open("out.txt", "a", encoding="utf-8") as file:
+        txt = '\n Final Epoch Result: Mean: {:7f}, Std: {:7f}'.format(acc[:, -1].mean().item(), acc[:, -1].std().item()) + \
+        '\n Best Epoch: {}: Mean: {:7f}, Std: {:7f}'.format(best_epoch, acc[:, best_epoch].mean().item(), acc[:, best_epoch].std().item())
+        file.write(txt)
     print('---------------- Final Epoch Result ----------------')
     print('Mean: {:7f}, Std: {:7f}'.format(acc[:,-1].mean(), acc[:,-1].std(), ))
     print(f'---------------- Best Epoch: {best_epoch} ----------------')

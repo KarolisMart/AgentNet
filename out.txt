@@ -1,0 +1,14 @@
+
+agent   MUTAG
+ Final Epoch Result: Mean: 0.904094, Std: 0.070037
+ Best Epoch: 285: Mean: 0.920175, Std: 0.066962
+agent   PTC_GIN
+ Final Epoch Result: Mean: 0.564286, Std: 0.078259
+ Best Epoch: 160: Mean: 0.619580, Std: 0.037336
+agent   PROTEINS
+agent   PROTEINS
+agent   PROTEINS
+agent   PROTEINS
+agent   PROTEINS
+agent   PROTEINS
+agent   PROTEINS

@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch_geometric.nn import global_mean_pool
 from torch_geometric.utils import add_self_loops, coalesce
 from torch_scatter import scatter_max, scatter_add
+from torch_scatter.composite import scatter_softmax
 from math import sqrt, log
 from typing import Optional
 from argparse import ArgumentParser
@@ -604,7 +605,7 @@ class AgentNet(nn.Module):
                 out += layer_out
                 del layer_out
 
-        for j in range(0, 4):
+        for j in range(0, 3):
             # 生成新图
             gen_eg = torch.stack([ 
                 torch.arange(0, num_agents_batch).view(batch_size, self.num_agents ).repeat_interleave(self.num_agents, dim=0).view(-1),
@@ -612,23 +613,35 @@ class AgentNet(nn.Module):
                 ])
             
 
-            Q_and_K = self.init_query(agent_emb).reshape(agent_emb.size(0), self.num_pos_attention_heads, -1)
-            
-            attantion_edg = (Q_and_K[gen_eg[0]] * Q_and_K[gen_eg[1]]).sum(dim=-1).view(-1) / sqrt(Q_and_K.size(-1))
+            Q= self.init_query(agent_emb).reshape(agent_emb.size(0), self.num_pos_attention_heads, -1)
+            K = self.init_query(agent_emb).reshape(agent_emb.size(0), self.num_pos_attention_heads, -1)
+
+            attantion_edg = (Q[gen_eg[0]] * K[gen_eg[1]]).sum(dim=-1).view(-1) / sqrt(Q.size(-1))
+            del Q, K
 
             if self.num_pos_attention_heads > 1:
                 attantion_edg = self.init_attn_lin(attantion_edg.view(gen_eg.size(1), self.num_pos_attention_heads))
+            
+            gen_eg = gen_eg.to(attantion_edg.device)
+            psb = scatter_softmax(attantion_edg, gen_eg[1]) 
+            
+            psb = (psb - psb.min()) / (psb.max() - psb.min())
+            psb = psb * 0.4 / psb.mean()
+            random_matrix = torch.rand_like(psb)
+            edg_list = (random_matrix < psb).float()
 
+            edg_list = edg_list.nonzero(as_tuple=False).view(-1)
+        
+            
 
-            attantion_edg = attantion_edg.view(batch_size, int(attantion_edg.size(0)/batch_size))
+            gen_eg = gen_eg[:, edg_list]
+            # with open("test.txt", 'w') as file:
+            #     file.write(format(gen_eg))
+            # gen_eg = gen_eg.unsqueeze(1)
+            # gen_eg = gen_eg.view(2, batch_size, self.num_agents * self.num_agents)
+            # gen_eg = gen_eg[:, :, edg_list].view(2, -1)
 
-            _, edg_list = torch.topk(attantion_edg, int(self.num_agents * self.num_agents/20))
-
-            gen_eg = gen_eg.unsqueeze(1)
-            gen_eg = gen_eg.view(2, batch_size, self.num_agents * self.num_agents)
-            gen_eg = gen_eg[:, :, edg_list].view(2, -1)
-
-            del attantion_edg, edg_list
+            del attantion_edg, edg_list, psb, random_matrix
 
             gen_eg = gen_eg.to(agent_emb.device)
 
@@ -638,6 +651,7 @@ class AgentNet(nn.Module):
             batch = torch.arange(0, batch_size).repeat_interleave(self.num_agents)
 
             batch = batch.to(agent_emb.device)
+            # print(batch.device)
 
             batch_size = (batch.max() + 1).item()
             num_nodes_batch = x.size(0)
